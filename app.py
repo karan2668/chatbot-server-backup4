@@ -5,9 +5,21 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from urllib.request import urlopen
 import io, requests
-
+import asyncio
+from prisma import Prisma
+# from fastapi.middleware.cors import CORSMiddleware
+import time
 # app instance
 app = FastAPI(title="Website Text Extraction API")
+
+# # Set up CORS middleware
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["http://127.0.0.1:5500"],  # Set this to the origin of your frontend
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 @app.get("/", include_in_schema=False)
 def index():
@@ -124,4 +136,90 @@ def extract(data: dict = Body(...)):
     except Exception as e:
         print({"message" : "Unable to Fetch Links" , "statusCode": 500})
         return []
+
+
+@app.post("/api/fetch-user")
+async def fetch_user(data: dict = Body(...)):
+    try:
+        bot_id=data["bot_id"]
+        db = Prisma()
+        await db.connect()
+        chatbot_ui = await db.chatbot.find_first(where={'bot_id':bot_id},include={'profile': True})
+        await db.disconnect()
+        print(chatbot_ui)
+        return chatbot_ui
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/create-thread")
+async def create_thread(data: dict = Body(...)):
+    try:
+        api_key=data["api_key"]
+        client = OpenAI(api_key=api_key)
+        thread = client.beta.threads.create()
+        return thread.id
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/create-user-message")
+async def create_user_message(data: dict = Body(...)):
+    try:
+        api_key=data["api_key"]
+        thread_id=data["thread_id"]
+        query=data["query"]
+        client = OpenAI(api_key=api_key)
+        message = client.beta.threads.messages.create(
+            thread_id,
+            role = "user",
+            content = query
+        )
+        # print(message)
+        return message.content[0].text.value
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/get-bot-message")
+async def get_bot_message(data: dict = Body(...)):
+    try:
+        api_key = data["api_key"]
+        thread_id = data["thread_id"]
+        assistant_id = data["assistant_id"]
+        client = OpenAI(api_key=api_key)
+        print(thread_id)
+        print(assistant_id)
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id
+        )
+        print(run.id)
+
+        runStatus = client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id  # Access 'id' directly without []
+        )
+
+        while runStatus.status != "completed":
+            time.sleep(5)
+            runStatus = client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id  # Access 'id' directly without []
+            )
+            print(runStatus)
+
+            if runStatus.status == "failed":
+                return runStatus
+
+        messages = client.beta.threads.messages.list(thread_id)
+        print("messagesssss", messages)
         
+        return {"message":messages.data[0].content[0].text.value, "role" : messages.data[0].role}
+    except Exception as e:
+        error = {"message": "Unable to Fetch ChatbotUI", "statusCode": 500}
+        print(e)
+        return error
