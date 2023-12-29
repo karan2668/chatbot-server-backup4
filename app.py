@@ -6,9 +6,23 @@ from bs4 import BeautifulSoup
 from urllib.request import urlopen
 import io, requests
 import asyncio
-from prisma import Prisma
+
 from fastapi.middleware.cors import CORSMiddleware
 import time
+import os
+import json
+
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+# load config from .env file
+load_dotenv()
+MONGODB_URI = os.environ["MONGODB_URI"]
+
+client = MongoClient(MONGODB_URI)
+mydb = client.pdfbot
+chatbot_collection = mydb.Chatbot
+profile_collection = mydb.Profile
 
 # app instance
 app = FastAPI(title="Website Text Extraction API")
@@ -140,18 +154,48 @@ def extract(data: dict = Body(...)):
 
 
 @app.post("/api/fetch-user")
-async def fetch_user(data: dict = Body(...)):
+def fetch_user(data: dict = Body(...)):
     try:
-        bot_id=data["bot_id"]
-        db = Prisma()
-        await db.connect()
-        chatbot_ui = await db.chatbot.find_first(where={'bot_id':bot_id},include={'profile': True})
-        await db.disconnect()
-        print(chatbot_ui)
-        return chatbot_ui
+        bot_id = data.get("bot_id")  # Use get to avoid KeyError if 'bot_id' is not present
+
+        # Get the profileId from the chatbot result
+        chatbot_result = chatbot_collection.find_one({'bot_id': bot_id})
+
+        if chatbot_result is None:
+            # Handle the case where chatbot_result is None (bot_id not found)
+            error = {"message": "Bot not found", "statusCode": 404}
+            return error
+
+        # Query the profile collection using the profileId as user_id
+        profile_id = str(chatbot_result.get("profileId"))
+        user_query = {"_id": ObjectId(profile_id)}  # Use ObjectId to match the ID type
+
+        user_result = profile_collection.find_one(user_query)
+
+        if user_result is None:
+            # Handle the case where user_result is None (profileId not found)
+            error = {"message": "User not found", "statusCode": 404}
+            return error
+
+        # Remove the "profileId" property from chatbot_result
+        del chatbot_result["profileId"]
+
+        # Add the user profile to the chatbot_result
+        chatbot_result["profile"] = user_result
+
+        print("Chatbot object:", chatbot_result)
+        print("profileId:", profile_id)
+
+        # Assuming you need to close the MongoDB client (check if this is necessary in your case)
+        # client.close()
+
+        # Convert the result to JSON
+        payload = json.loads(json.dumps(chatbot_result, default=str))
+        return payload
+
     except Exception as e:
-        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
-        print(error)
+        error = {"message": "Internal Server Error", "statusCode": 500}
+        print(e)
         return error
     
 @app.post("/api/create-thread")
