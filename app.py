@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import FastAPI, Body
 from openai import OpenAI
 from fastapi.responses import RedirectResponse
 import xml.etree.ElementTree as ET
@@ -7,19 +7,20 @@ from urllib.request import urlopen
 import io, requests
 import asyncio
 from prisma import Prisma
-# from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 import time
+
 # app instance
 app = FastAPI(title="Website Text Extraction API")
 
-# # Set up CORS middleware
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["http://127.0.0.1:5500"],  # Set this to the origin of your frontend
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
+# Set up CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5500"],  # Set this to the origin of your frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/", include_in_schema=False)
 def index():
