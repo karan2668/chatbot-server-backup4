@@ -30,11 +30,12 @@ app = FastAPI(title="Website Text Extraction API")
 # # Set up CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    # allow_origins=["http://127.0.0.1:5500","https://lambent-halva-70f556.netlify.app"],  # Set this to the origin of your frontend
+    allow_origins=["http://127.0.0.1:5500", "https://lambent-halva-70f556.netlify.app"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
 
 @app.get("/", include_in_schema=False)
 def index():
