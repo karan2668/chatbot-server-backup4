@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from urllib.request import urlopen
 import io, requests
 import asyncio
-
+import base64
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import os
@@ -202,8 +202,20 @@ def fetch_user(data: dict = Body(...)):
 @app.post("/api/create-thread")
 async def create_thread(data: dict = Body(...)):
     try:
-        api_key=data["api_key"]
-        client = OpenAI(api_key=api_key)
+        user_key=data["user_key"]
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key)
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+        
         thread = client.beta.threads.create()
         return thread.id
     except Exception as e:
@@ -214,10 +226,21 @@ async def create_thread(data: dict = Body(...)):
 @app.post("/api/create-user-message")
 async def create_user_message(data: dict = Body(...)):
     try:
-        api_key=data["api_key"]
+        user_key=data["user_key"]
         thread_id=data["thread_id"]
         query=data["query"]
-        client = OpenAI(api_key=api_key)
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key)
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+        # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+
         message = client.beta.threads.messages.create(
             thread_id,
             role = "user",
@@ -233,10 +256,23 @@ async def create_user_message(data: dict = Body(...)):
 @app.post("/api/get-bot-message")
 async def get_bot_message(data: dict = Body(...)):
     try:
-        api_key = data["api_key"]
+        user_key=data["user_key"]
         thread_id = data["thread_id"]
         assistant_id = data["assistant_id"]
-        client = OpenAI(api_key=api_key)
+
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key)
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+
         print(thread_id)
         print(assistant_id)
         run = client.beta.threads.runs.create(
