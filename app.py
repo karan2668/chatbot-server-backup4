@@ -30,7 +30,8 @@ app = FastAPI(title="Website Text Extraction API")
 # Set up CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "https://lambent-halva-70f556.netlify.app", "https://chatbot-test-production.up.railway.app"],
+    # allow_origins=["http://127.0.0.1:5500", "https://lambent-halva-70f556.netlify.app", "https://chatbot-test-production.up.railway.app"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
