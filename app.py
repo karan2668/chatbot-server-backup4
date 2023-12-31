@@ -157,10 +157,10 @@ def extract(data: dict = Body(...)):
 @app.post("/api/fetch-user")
 def fetch_user(data: dict = Body(...)):
     try:
-        bot_id = data.get("bot_id")  # Use get to avoid KeyError if 'bot_id' is not present
+        _id = data.get("token")  # Use get to avoid KeyError if 'bot_id' is not present
 
         # Get the profileId from the chatbot result
-        chatbot_result = chatbot_collection.find_one({'bot_id': bot_id})
+        chatbot_result = chatbot_collection.find_one({"_id": ObjectId(_id)})
 
         if chatbot_result is None:
             # Handle the case where chatbot_result is None (bot_id not found)
