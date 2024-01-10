@@ -311,9 +311,9 @@ async def save_session(data: dict = Body(...)):
         current_date = datetime.now()
 
         data = {
-            "thread_id": ObjectId(profile_id),
+            "thread_id": thread_id,
             "chatbotId": ObjectId(chatbot_id),
-            "profileId": thread_id,
+            "profileId": ObjectId(profile_id),
             "createdAt": current_date 
         }
 
@@ -334,9 +334,10 @@ async def get_bot_message(data: dict = Body(...)):
         thread_id = data["thread_id"]
         assistant_id = data["assistant_id"]
         chatbot_id = data["chatbot_id"]
-        messages_id = data["messages_id"]
         query = data["query"]
         length_file_ids = data["length_file_ids"]
+        profile_id = data["profile_id"]
+        count = data["count"]
         current_date = datetime.now()
 
         # Decode a Base64 encoded string
@@ -354,6 +355,23 @@ async def get_bot_message(data: dict = Body(...)):
         if chatbot_result["messages_used"] == chatbot_result["messages_limit_per_day"]:
             return {"message": chatbot_result["messages_limit_warning_message"], "role": "BOT"}
 
+        if (int(count) == 0):
+            data = {
+                "thread_id": thread_id,
+                "chatbotId": ObjectId(chatbot_id),
+                "profileId": ObjectId(profile_id),
+                "createdAt": current_date 
+            }   
+            messages = messages_collection.insert_one(data)
+            print(messages.inserted_id)
+
+        get_created_messages = messages_collection.find_one({"thread_id": thread_id})
+
+        print("get_created_messagesssasa", get_created_messages)
+
+        messages_id = str(get_created_messages["_id"])
+
+        print("messages_iddddd", messages_id)
         
         message = client.beta.threads.messages.create(
             thread_id,
