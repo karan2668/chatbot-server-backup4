@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import time
 import os
 import json
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -23,6 +24,9 @@ client = MongoClient(MONGODB_URI)
 mydb = client.pdfbot
 chatbot_collection = mydb.Chatbot
 profile_collection = mydb.Profile
+messages_collection = mydb.Messages
+message_collection = mydb.Message
+faq_collection = mydb.FAQ
 
 # app instance
 app = FastAPI(title="Website Text Extraction API")
@@ -157,7 +161,7 @@ def extract(data: dict = Body(...)):
 @app.post("/api/fetch-user")
 def fetch_user(data: dict = Body(...)):
     try:
-        _id = data.get("token")  # Use get to avoid KeyError if 'bot_id' is not present
+        _id = data.get("token")  # Use get to avoid KeyError if '_id' is not present
 
         # Get the profileId from the chatbot result
         chatbot_result = chatbot_collection.find_one({"_id": ObjectId(_id)})
@@ -184,11 +188,37 @@ def fetch_user(data: dict = Body(...)):
         # Add the user profile to the chatbot_result
         chatbot_result["profile"] = user_result
 
-        print("Chatbot object:", chatbot_result)
-        print("profileId:", profile_id)
+        chatbot_result["faqs"] = []
 
+        faqs_query = {"chatbotId": ObjectId(_id)}
+
+        faqs = faq_collection.find(faqs_query)
+
+        for faq in faqs:
+            chatbot_result["faqs"].append(faq)
+        
         # Assuming you need to close the MongoDB client (check if this is necessary in your case)
         # client.close()
+            
+            # Decode a Base64 encoded string
+        print(user_result["user_key"])
+        decoded_string = base64.b64decode(user_result["user_key"])
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+            
+        assistant = client.beta.assistants.retrieve(chatbot_result["bot_id"])
+
+        print("assistant", assistant)
+
+        chatbot_result['length_file_ids'] = len(assistant.file_ids)
 
         # Convert the result to JSON
         payload = json.loads(json.dumps(chatbot_result, default=str))
@@ -229,6 +259,8 @@ async def create_user_message(data: dict = Body(...)):
         user_key=data["user_key"]
         thread_id=data["thread_id"]
         query=data["query"]
+        chatbot_id=data["chatbot_id"]
+        messages_id=data["messages_id"]
         # Decode a Base64 encoded string
         decoded_string = base64.b64decode(user_key)
         # Remove the b prefix using the decode() method
@@ -247,7 +279,49 @@ async def create_user_message(data: dict = Body(...)):
             content = query
         )
         # print(message)
+
+        # Get the current date and time in UTC
+        current_date = datetime.now()
+        
+        data= {
+             "role": "USER",
+             "content": message.content[0].text.value,
+             "chatbotId": ObjectId(chatbot_id),
+             "messagesId": ObjectId(messages_id),
+             "createdAt": current_date
+        }
+
+        user_message = message_collection.insert_one(data)
+        print(user_message)
+
         return message.content[0].text.value
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/save-session")
+async def save_session(data: dict = Body(...)):
+    try:
+        thread_id=data["thread_id"]
+        chatbot_id=data["chatbot_id"]
+        profile_id=data["profile_id"]
+
+        # Get the current date and time in UTC
+        current_date = datetime.now()
+
+        data = {
+            "thread_id": ObjectId(profile_id),
+            "chatbotId": ObjectId(chatbot_id),
+            "profileId": thread_id,
+            "createdAt": current_date 
+        }
+
+        messages = messages_collection.insert_one(data)
+        print(messages.inserted_id)
+        # Convert the result to JSON
+        payload = json.loads(json.dumps(messages.inserted_id, default=str))
+        return payload
     except Exception as e:
         error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
         print(error)
@@ -256,52 +330,109 @@ async def create_user_message(data: dict = Body(...)):
 @app.post("/api/get-bot-message")
 async def get_bot_message(data: dict = Body(...)):
     try:
-        user_key=data["user_key"]
+        user_key = data["user_key"]
         thread_id = data["thread_id"]
         assistant_id = data["assistant_id"]
+        chatbot_id = data["chatbot_id"]
+        messages_id = data["messages_id"]
+        query = data["query"]
+        length_file_ids = data["length_file_ids"]
+        current_date = datetime.now()
 
         # Decode a Base64 encoded string
-        decoded_string = base64.b64decode(user_key)
-        # Remove the b prefix using the decode() method
-        decoded_string = decoded_string.decode('utf-8')
-
-        # Remove the b prefix using the str.strip() method
-        decoded_string = decoded_string.strip('b')
-
-        # Print the decoded string
+        decoded_string = base64.b64decode(user_key).decode('utf-8').strip('b')
         print(decoded_string)
 
         client = OpenAI(api_key=decoded_string)
 
+        chatbot_result = chatbot_collection.find_one({"bot_id": assistant_id})
+        print(chatbot_result)
+
+        if int(length_file_ids) == 0:
+            return {"message": chatbot_result["files_not_uploaded_message"], "role": "BOT"}
+
+        if chatbot_result["messages_used"] == chatbot_result["messages_limit_per_day"]:
+            return {"message": chatbot_result["messages_limit_warning_message"], "role": "BOT"}
+
+        
+        message = client.beta.threads.messages.create(
+            thread_id,
+            role="user",
+            content=query
+        )
+
+        data = {
+            "role": "USER",
+            "content": message.content[0].text.value,
+            "chatbotId": ObjectId(chatbot_id),
+            "messagesId": ObjectId(messages_id),
+            "createdAt": current_date
+        }
+
+        user_message = message_collection.insert_one(data)
+        print(user_message)
+
+        faqs_query = {"chatbotId": ObjectId(chatbot_id)}
+        faqs = faq_collection.find(faqs_query)
+
+        findFaq = next((faq for faq in faqs if query in faq['question']), None)
+
+        if findFaq and "answer" in findFaq:
+            data = {
+                "role": "BOT",
+                "content": findFaq["answer"],
+                "chatbotId": ObjectId(chatbot_id),
+                "messagesId": ObjectId(messages_id),
+                "createdAt": current_date
+            }
+            message_collection.insert_one(data)
+            chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
+            return {"message": str(findFaq["answer"]), "role": "BOT"}
+
         print(thread_id)
         print(assistant_id)
+
         run = client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=assistant_id
         )
         print(run.id)
 
-        runStatus = client.beta.threads.runs.retrieve(
+        run_status = client.beta.threads.runs.retrieve(
             thread_id=thread_id,
-            run_id=run.id  # Access 'id' directly without []
+            run_id=run.id
         )
 
-        while runStatus.status != "completed":
+        while run_status.status != "completed":
             time.sleep(5)
-            runStatus = client.beta.threads.runs.retrieve(
+            run_status = client.beta.threads.runs.retrieve(
                 thread_id=thread_id,
-                run_id=run.id  # Access 'id' directly without []
+                run_id=run.id
             )
-            print(runStatus)
+            print(run_status)
 
-            if runStatus.status == "failed":
-                return runStatus
+            if run_status.status == "failed":
+                return run_status
 
         messages = client.beta.threads.messages.list(thread_id)
-        print("messagesssss", messages)
-        
-        return {"message":messages.data[0].content[0].text.value, "role" : messages.data[0].role}
+
+        print("messages", messages.data[0].content[0].text.value)
+
+        data = {
+            "role": "BOT",
+            "content": messages.data[0].content[0].text.value,
+            "chatbotId": ObjectId(chatbot_id),
+            "messagesId": ObjectId(messages_id),
+            "createdAt": current_date
+        }
+
+        bot_message = message_collection.insert_one(data)
+        print(bot_message)
+
+        chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
+
+        return {"message": messages.data[0].content[0].text.value, "role": "BOT"}
     except Exception as e:
-        error = {"message": "Unable to Fetch ChatbotUI", "statusCode": 500}
+        error = {"message": "Something went wrong", "statusCode": 500}
         print(e)
         return error
