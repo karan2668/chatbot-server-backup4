@@ -338,6 +338,7 @@ async def get_bot_message(data: dict = Body(...)):
         length_file_ids = data["length_file_ids"]
         profile_id = data["profile_id"]
         count = data["count"]
+        # Get the current date and time in UTC
         current_date = datetime.now()
 
         # Decode a Base64 encoded string
