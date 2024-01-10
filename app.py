@@ -423,7 +423,7 @@ async def get_bot_message(data: dict = Body(...)):
         )
 
         while run_status.status != "completed":
-            time.sleep(5)
+            time.sleep(1)
             run_status = client.beta.threads.runs.retrieve(
                 thread_id=thread_id,
                 run_id=run.id
