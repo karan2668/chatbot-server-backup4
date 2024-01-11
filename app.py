@@ -12,7 +12,7 @@ import time
 import os
 import json
 from datetime import datetime, timezone
-
+import re
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from bson.objectid import ObjectId
@@ -28,6 +28,8 @@ messages_collection = mydb.Messages
 message_collection = mydb.Message
 faq_collection = mydb.FAQ
 
+
+regex_pattern = r"【.*?】"
 # app instance
 app = FastAPI(title="Website Text Extraction API")
 
@@ -435,11 +437,11 @@ async def get_bot_message(data: dict = Body(...)):
 
         messages = client.beta.threads.messages.list(thread_id)
 
-        print("messages", messages.data[0].content[0].text.value)
+        print("messages", re.sub(regex_pattern, '', messages.data[0].content[0].text.value))
 
         data = {
             "role": "BOT",
-            "content": messages.data[0].content[0].text.value,
+            "content": re.sub(regex_pattern, '', messages.data[0].content[0].text.value),
             "chatbotId": ObjectId(chatbot_id),
             "messagesId": ObjectId(messages_id),
             "createdAt": current_date
@@ -450,7 +452,7 @@ async def get_bot_message(data: dict = Body(...)):
 
         chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
 
-        return {"message": messages.data[0].content[0].text.value, "role": "BOT"}
+        return {"message": re.sub(regex_pattern, '', messages.data[0].content[0].text.value), "role": "BOT"}
     except Exception as e:
         error = {"message": "Something went wrong", "statusCode": 500}
         print(e)
