@@ -329,7 +329,31 @@ async def save_session(data: dict = Body(...)):
         print(error)
         return error
     
+
+def extract_follow_up_question(text):
+    # Split the remaining text into lines
+    lines = text.split('.')
+
+    # Iterate through lines to find the one containing a question
+    if len(lines) == 0:
+        return None
+    else:
+        lines.reverse()
+        print(lines)
+        return lines[0].strip()
+
 @app.post("/api/get-bot-message")
+    # """
+    # The `get_bot_message` function is an API endpoint that receives a POST request with data containing
+    # information about a chat conversation between a user and a chatbot. It processes the user's query,
+    # interacts with a chatbot model using the OpenAI API, and returns the chatbot's response along with
+    # any follow-up questions.
+    
+    # :param data: The `data` parameter is a dictionary that contains the following keys:
+    # :type data: dict
+    # :return: a JSON response containing the assistant's reply message, role (which can be "BOT" or
+    # "USER"), and any follow-up questions.
+    # """
 async def get_bot_message(data: dict = Body(...)):
     try:
         user_key = data["user_key"]
@@ -448,11 +472,24 @@ async def get_bot_message(data: dict = Body(...)):
         }
 
         bot_message = message_collection.insert_one(data)
-        print(bot_message)
 
         chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
 
-        return {"message": re.sub(regex_pattern, '', messages.data[0].content[0].text.value), "role": "BOT"}
+        text_value = messages.data[0].content[0].text.value
+        cleaned_text = re.sub(regex_pattern, '', text_value)
+        follow_up_question = extract_follow_up_question(cleaned_text)
+
+        assistant_reply = {
+            "message": cleaned_text,
+            "role": "BOT",
+            "follow_up_questions": follow_up_question if follow_up_question else ""
+        }
+
+        assistant_reply['content'] = assistant_reply['message'].replace(follow_up_question, "")
+
+        print(bot_message)
+
+        return assistant_reply
     except Exception as e:
         error = {"message": "Something went wrong", "statusCode": 500}
         print(e)
