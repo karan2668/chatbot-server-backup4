@@ -335,8 +335,8 @@ def extract_follow_up_question(text):
     lines = text.split('.')
 
     # Iterate through lines to find the one containing a question
-    if len(lines) == 0:
-        return None
+    if len(lines) == 0 or len(lines) == 1:
+        return ""
     else:
         lines.reverse()
         print(lines)
@@ -480,12 +480,10 @@ async def get_bot_message(data: dict = Body(...)):
         follow_up_question = extract_follow_up_question(cleaned_text)
 
         assistant_reply = {
-            "message": cleaned_text,
+            "message": cleaned_text.replace(follow_up_question, ""),
             "role": "BOT",
-            "follow_up_questions": follow_up_question if follow_up_question else ""
+            "follow_up_questions": follow_up_question
         }
-
-        assistant_reply['content'] = assistant_reply['message'].replace(follow_up_question, "")
 
         print(bot_message)
 
