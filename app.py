@@ -420,7 +420,7 @@ async def get_bot_message(data: dict = Body(...)):
         faqs_query = {"chatbotId": ObjectId(chatbot_id)}
         faqs = faq_collection.find(faqs_query)
 
-        findFaq = next((faq for faq in faqs if query in faq['question']), None)
+        findFaq = next((faq for faq in faqs if query == faq['question']), None)
 
         if findFaq and "answer" in findFaq:
             data = {
