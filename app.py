@@ -1,31 +1,25 @@
 from fastapi import FastAPI, Body
 from openai import OpenAI
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from urllib.request import urlopen
-import requests
+import io, requests
 import asyncio
+import base64
 from fastapi.middleware.cors import CORSMiddleware
+import time
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from bson.objectid import ObjectId
-from pinecone import Pinecone
 # load config from .env file
 load_dotenv()
 MONGODB_URI = os.environ["MONGODB_URI"]
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
-PINECONE_ENVIRONMENT = os.environ["PINECONE_ENVIRONMENT"]
-PINECONE_INDEX = os.environ["PINECONE_INDEX"]
 
-pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
-pinecone_index = pc.Index(PINECONE_INDEX)
-
-openCl = OpenAI(api_key=OPENAI_API_KEY)
 client = MongoClient(MONGODB_URI)
 mydb = client.pdfbot
 chatbot_collection = mydb.Chatbot
@@ -33,8 +27,9 @@ profile_collection = mydb.Profile
 messages_collection = mydb.Messages
 message_collection = mydb.Message
 faq_collection = mydb.FAQ
-source_collection = mydb.Source
 
+
+regex_pattern = r"【.*?】"
 # app instance
 app = FastAPI(title="Website Text Extraction API")
 
@@ -51,6 +46,53 @@ app.add_middleware(
 @app.get("/", include_in_schema=False)
 def index():
     return RedirectResponse("/docs", status_code=308)
+
+@app.post("/api/website-extract")
+def extract(data: dict = Body(...)):
+    try:
+        client = OpenAI(api_key=data["openAIAPIkey"])
+        urls=data["websiteURLs"]
+
+        urlsText=[]
+        
+        # Download content for each URL and combine with website content
+        for url in urls:
+            html = urlopen(url).read()
+            soup = BeautifulSoup(html, features="html.parser")
+
+            # kill all script and style elements
+            for script in soup(["script", "style"]):
+                script.extract()    # rip it out  
+            
+            # get text
+            text = soup.get_text()
+
+            # break into lines and remove leading and trailing space on each
+            lines = (line.strip() for line in text.splitlines())
+            # break multi-headlines into a line each
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            # drop blank lines
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+
+            if text not in urlsText:
+                urlsText.append(text)
+
+        print(urlsText)
+                
+        fileIDs=[]
+        for urlText in urlsText:
+            file = client.files.create(
+                file=io.BytesIO(urlText.encode()),
+                purpose="assistants"
+            )
+            fileIDs.append(file.id)
+
+        print(fileIDs)
+        print(len(fileIDs))
+
+        return fileIDs
+    except Exception as e:
+        return {"message" : "Unable to Extract Data" , "statusCode": 500}
     
 # first function for scraping links
 def scrape_sitemap(url):
@@ -104,7 +146,7 @@ def extracted_sublinks(website_url):
 
 
 @app.post("/api/fetch-sublinks")
-def fetch_sublinks(data: dict = Body(...)):
+def extract(data: dict = Body(...)):
     try:
         URL=data["URL"]
         first_function = scrape_sitemap(URL)
@@ -118,40 +160,39 @@ def fetch_sublinks(data: dict = Body(...)):
         return []
 
 
-@app.post("/api/fetch-chatbot")
+@app.post("/api/fetch-user")
 def fetch_user(data: dict = Body(...)):
     try:
-        chatbotId = data.get("token")  
-        messagesId = data.get("messagesId")  
+        _id = data.get("token")  # Use get to avoid KeyError if '_id' is not present
 
-        chatbot_result = chatbot_collection.find_one({"_id": ObjectId(chatbotId)})
+        # Get the profileId from the chatbot result
+        chatbot_result = chatbot_collection.find_one({"_id": ObjectId(_id)})
 
         if chatbot_result is None:
             # Handle the case where chatbot_result is None (bot_id not found)
             error = {"message": "Bot not found", "statusCode": 404}
             return error
-        
+
+        # Query the profile collection using the profileId as user_id
+        profile_id = str(chatbot_result.get("profileId"))
+        user_query = {"_id": ObjectId(profile_id)}  # Use ObjectId to match the ID type
+
+        user_result = profile_collection.find_one(user_query)
+
+        if user_result is None:
+            # Handle the case where user_result is None (profileId not found)
+            error = {"message": "User not found", "statusCode": 404}
+            return error
+
+        # Remove the "profileId" property from chatbot_result
+        del chatbot_result["profileId"]
+
+        # Add the user profile to the chatbot_result
+        chatbot_result["profile"] = user_result
+
         chatbot_result["faqs"] = []
-        
-        if  messagesId is not None:
-            chatbot_result["messagesId"] = messagesId
-        else :
-            profileId = chatbot_result["profileId"]
 
-            # Get the current date and time in UTC
-            current_date = datetime.now()
-
-            data = {
-                "chatbotId": ObjectId(chatbotId),
-                "profileId": ObjectId(profileId),
-                "createdAt": current_date 
-            }
-
-            session_created = messages_collection.insert_one(data)
-            print(session_created.inserted_id)    
-            chatbot_result["messagesId"] = session_created.inserted_id
-
-        faqs_query = {"chatbotId": ObjectId(chatbotId)}
+        faqs_query = {"chatbotId": ObjectId(_id)}
 
         faqs = faq_collection.find(faqs_query)
 
@@ -160,6 +201,26 @@ def fetch_user(data: dict = Body(...)):
         
         # Assuming you need to close the MongoDB client (check if this is necessary in your case)
         # client.close()
+            
+            # Decode a Base64 encoded string
+        print(user_result["user_key"])
+        decoded_string = base64.b64decode(user_result["user_key"])
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+            
+        assistant = client.beta.assistants.retrieve(chatbot_result["bot_id"])
+
+        print("assistant", assistant)
+
+        chatbot_result['length_file_ids'] = len(assistant.file_ids)
 
         # Convert the result to JSON
         payload = json.loads(json.dumps(chatbot_result, default=str))
@@ -169,190 +230,264 @@ def fetch_user(data: dict = Body(...)):
         error = {"message": "Internal Server Error", "statusCode": 500}
         print(e)
         return error
-
-def get_matches_from_embeddings(embeddings, file_key):
+    
+@app.post("/api/create-thread")
+async def create_thread(data: dict = Body(...)):
     try:
-        # print("embeddings",embeddings)
-        # print("file_key",file_key)
-        query_result = pinecone_index.query(
-            top_k=5,
-            vector=embeddings,
-            include_metadata=True,
-            namespace=file_key
+        user_key=data["user_key"]
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key)
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+        
+        thread = client.beta.threads.create()
+        return thread.id
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/create-user-message")
+async def create_user_message(data: dict = Body(...)):
+    try:
+        user_key=data["user_key"]
+        thread_id=data["thread_id"]
+        query=data["query"]
+        chatbot_id=data["chatbot_id"]
+        messages_id=data["messages_id"]
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key)
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+        # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # Print the decoded string
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+
+        message = client.beta.threads.messages.create(
+            thread_id,
+            role = "user",
+            content = query
         )
-        # print("query_result",query_result)
-        return query_result["matches"] or []
-    except Exception as error:
-        print("error querying embeddings", error)
-        raise error
+        # print(message)
 
+        # Get the current date and time in UTC
+        current_date = datetime.now()
+        
+        data= {
+             "role": "USER",
+             "content": message.content[0].text.value,
+             "chatbotId": ObjectId(chatbot_id),
+             "messagesId": ObjectId(messages_id),
+             "createdAt": current_date
+        }
 
-async def get_embeddings(text):
+        user_message = message_collection.insert_one(data)
+        print(user_message)
+
+        return message.content[0].text.value
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
+    
+@app.post("/api/save-session")
+async def save_session(data: dict = Body(...)):
     try:
-        response = openCl.embeddings.create(
-            model="text-embedding-ada-002",
-            input=[text.replace("\n", " ")]
-        )
-        # print("get_embeddings", response.data[0].embedding)
-        result = response.data[0].embedding
-        return result
-    except Exception as error:
-        print("error calling openai embeddings api", error)
-        raise error
-    
-async def get_context(query, file_key):
-    # print("query",query)
-    # print("file_key",file_key)
-    query_embeddings = await get_embeddings(query)
-    
-    matches = get_matches_from_embeddings(query_embeddings, file_key)
-    # print("matches", matches)
-
-    qualifying_docs = [match for match in matches if match.get('score') and match['score'] > 0.7]
-
-    # print("qualifying_docs", qualifying_docs)
-    
-    class Metadata:
-        def __init__(self, text, page_number):
-            self.text = text
-            self.page_number = page_number
-
-    docs = [match['metadata']['text'] for match in qualifying_docs if 'metadata' in match]
-    # 5 vectors
-    return "\n".join(docs)[:3000]
-
-@app.post("/api/get-bot-message")
-async def get_bot_message(data: dict = Body(...)):
-    try:
-        messagesId = data.get("messagesId")  
-        messages = list(data.get("messages"))
-        chatbotId = data.get("chatbotId")
-        query = data.get("query")
+        thread_id=data["thread_id"]
+        chatbot_id=data["chatbot_id"]
+        profile_id=data["profile_id"]
 
         # Get the current date and time in UTC
         current_date = datetime.now()
 
-        chatbot_result = chatbot_collection.find_one({"_id": ObjectId(chatbotId)})
-
-        faq_query = {"question": query}
-
-        faq = faq_collection.find_one(faq_query)
-
-        sources = source_collection.find({"chatbotId": ObjectId(chatbotId)})
-
-        sources_list = list(sources)
-        if sources is not None and len(sources_list) == 0:
-            return {"content": chatbot_result["files_not_uploaded_message"], "role": "assistant"}
-
-        if chatbot_result["messages_used"] == chatbot_result["messages_limit_per_day"]:
-            return {"content": chatbot_result["messages_limit_warning_message"], "role": "assistant"}
-        
-        if faq is not None and faq["question"] == query:
-            data = [
-                {
-                    "role": "user",
-                    "content": query,
-                    "chatbotId": ObjectId(chatbotId),
-                    "messagesId": ObjectId(messagesId),
-                    "createdAt": current_date
-                },
-                {
-                    "role": "assistant",
-                    "content": faq["answer"],
-                    "chatbotId": ObjectId(chatbotId),
-                    "messagesId": ObjectId(messagesId),
-                    "createdAt": current_date
-                }
-            ]
-            message_collection.insert_many(data)
-            chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
-            return {"content": faq["answer"], "role": "assistant"}
-
-        context = ""
-
-        for source in sources_list: 
-            context += await get_context(query, source["file_key"])
-        
-        # print("context", context)
-        
-        support_details = "If you are facing any issue then mail your issue @pilare9421@vasteron.com"
-        additional_guidelines = chatbot_result["bot_guidelines"]
-        brandvoice_placeholder = f"START CONTEXT BLOCK\n{str(context)}\nEND OF CONTEXT BLOCK"
-
-        response_length = "0 to 30 words only" if chatbot_result["response_length"] == "short" else None
-
-        support_bot_prompt = f"""
-            You are {chatbot_result["bot_name"]}, an AI assistant conversant ONLY in English, enthusiastic about representing and providing information about the company (if given) {chatbot_result["company_name"]} and its services you're designed to assist with.
-            Given the following extracted chunks from a long document, your task is to create a final, engaging answer in English. If an answer can't be found in the chunks, politely say that you don't know and offer to assist with anything else.
-            If you don't find an answer from the chunks, politely say that you don't know and ask if you can help with anything else. Don't try to make up an answer{brandvoice_placeholder}. Answer the user's query with more confidence.
-            Ensure not to reference competitors while delivering responses.
-            {support_details}
-            Your goals are to:
-            Answer the user's query in between {response_length}.
-            - Show empathy towards user concerns, particularly related to the services you represent, referring to the company in first-person terms, such as 'we' or 'us'.
-            - Confirm resolution, express gratitude to the user, and close the conversation with a polite, positive sign-off when no more assistance is needed.
-            - Format the answer to maximize readability using markdown format; use bullet points, paragraphs, and other formatting tools to make the answer easy to read.
-            - Answer ONLY in English irrespective of user's conversation or language used in the chunk.
-            Do NOT answer in any other language other than English.
-            {additional_guidelines}
-            Here's an example:
-            ===
-            CONTEXT INFORMATION:
-            CHUNK [1]: Our company offers a subscription-based music streaming service called 'MusicStreamPro.' We have two plans: Basic and Premium. The Basic plan costs $4.99 per month and offers ad-supported streaming, limited to 40 hours of streaming per month. The Premium plan costs $9.99 per month and offers ad-free streaming, unlimited streaming hours, and the ability to download songs for offline listening.
-            CHUNK [2]: Not a relevant piece of information
-            ---
-            Question: What is the cost of the Premium plan, and what features does it include?
-            Helpful Answer:
-            The cost of the Premium plan is $9.99 per month. The features included in this plan are:
-            - Ad-free streaming
-            - Unlimited streaming hours
-            - Ability to download songs for offline listening
-            Please let me know if there's anything else I can assist you with!
-            """
-
-        prompt = {
-            "role": "system",
-            "content": support_bot_prompt
+        data = {
+            "thread_id": thread_id,
+            "chatbotId": ObjectId(chatbot_id),
+            "profileId": ObjectId(profile_id),
+            "createdAt": current_date 
         }
-        
-        def stream():
-            completion = openCl.chat.completions.create(
-                model="gpt-3.5-turbo",
-                stream=True,
-                messages=[prompt, *filter(lambda m: m["role"] == "user", messages)]
-            )
-            for line in completion:
-                chunk = line.choices[0].delta.content
-                if chunk:
-                    yield chunk
 
-        # data = [
-        #     {
-        #         "role": "user",
-        #         "content": query,
-        #         "chatbotId": ObjectId(chatbotId),
-        #         "messagesId": ObjectId(messagesId),
-        #         "createdAt": current_date
-        #     },
-        #     {
-        #         "role": "assistant",
-        #         "content": response.choices[0].message.content,
-        #         "chatbotId": ObjectId(chatbotId),
-        #         "messagesId": ObjectId(messagesId),
-        #         "createdAt": current_date
-        #     }
-        # ]
-
-        # create_response = message_collection.insert_many(data)
-
-        # print(create_response)
-
-        # chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
-
-        # Use the generator in StreamingResponse
-        return StreamingResponse(stream(), media_type='text/event-stream')
+        messages = messages_collection.insert_one(data)
+        print(messages.inserted_id)
+        # Convert the result to JSON
+        payload = json.loads(json.dumps(messages.inserted_id, default=str))
+        return payload
+    except Exception as e:
+        error = {"message" : "Unable to Fetch ChatbotUI" , "statusCode": 500}
+        print(error)
+        return error
     
 
+def extract_follow_up_question(text):
+    # Split the remaining text into lines
+    lines = text.split('.')
+
+    # Iterate through lines to find the one containing a question
+    if len(lines) == 0 or len(lines) == 1:
+        return ""
+    else:
+        lines.reverse()
+        print(lines)
+        return lines[0].strip()
+
+@app.post("/api/get-bot-message")
+    # """
+    # The `get_bot_message` function is an API endpoint that receives a POST request with data containing
+    # information about a chat conversation between a user and a chatbot. It processes the user's query,
+    # interacts with a chatbot model using the OpenAI API, and returns the chatbot's response along with
+    # any follow-up questions.
+    
+    # :param data: The `data` parameter is a dictionary that contains the following keys:
+    # :type data: dict
+    # :return: a JSON response containing the assistant's reply message, role (which can be "BOT" or
+    # "USER"), and any follow-up questions.
+    # """
+async def get_bot_message(data: dict = Body(...)):
+    try:
+        user_key = data["user_key"]
+        thread_id = data["thread_id"]
+        assistant_id = data["assistant_id"]
+        chatbot_id = data["chatbot_id"]
+        query = data["query"]
+        length_file_ids = data["length_file_ids"]
+        profile_id = data["profile_id"]
+        count = data["count"]
+        # Get the current date and time in UTC
+        current_date = datetime.now()
+
+        # Decode a Base64 encoded string
+        decoded_string = base64.b64decode(user_key).decode('utf-8').strip('b')
+        print(decoded_string)
+
+        client = OpenAI(api_key=decoded_string)
+
+        chatbot_result = chatbot_collection.find_one({"bot_id": assistant_id})
+        print(chatbot_result)
+
+        if int(length_file_ids) == 0:
+            return {"message": chatbot_result["files_not_uploaded_message"], "role": "BOT"}
+
+        if chatbot_result["messages_used"] == chatbot_result["messages_limit_per_day"]:
+            return {"message": chatbot_result["messages_limit_warning_message"], "role": "BOT"}
+
+        if (int(count) == 0):
+            data = {
+                "thread_id": thread_id,
+                "chatbotId": ObjectId(chatbot_id),
+                "profileId": ObjectId(profile_id),
+                "createdAt": current_date 
+            }   
+            messages = messages_collection.insert_one(data)
+            print(messages.inserted_id)
+
+        get_created_messages = messages_collection.find_one({"thread_id": thread_id})
+
+        print("get_created_messagesssasa", get_created_messages)
+
+        messages_id = str(get_created_messages["_id"])
+
+        print("messages_iddddd", messages_id)
+        
+        message = client.beta.threads.messages.create(
+            thread_id,
+            role="user",
+            content=query
+        )
+
+        data = {
+            "role": "USER",
+            "content": message.content[0].text.value,
+            "chatbotId": ObjectId(chatbot_id),
+            "messagesId": ObjectId(messages_id),
+            "createdAt": current_date
+        }
+
+        user_message = message_collection.insert_one(data)
+        print(user_message)
+
+        faqs_query = {"chatbotId": ObjectId(chatbot_id)}
+        faqs = faq_collection.find(faqs_query)
+
+        findFaq = next((faq for faq in faqs if query == faq['question']), None)
+
+        if findFaq and "answer" in findFaq:
+            data = {
+                "role": "BOT",
+                "content": findFaq["answer"],
+                "chatbotId": ObjectId(chatbot_id),
+                "messagesId": ObjectId(messages_id),
+                "createdAt": current_date
+            }
+            message_collection.insert_one(data)
+            chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
+            return {"message": str(findFaq["answer"]), "role": "BOT"}
+
+        print(thread_id)
+        print(assistant_id)
+
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id
+        )
+        print(run.id)
+
+        run_status = client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id
+        )
+
+        while run_status.status != "completed":
+            time.sleep(1)
+            run_status = client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
+            print(run_status)
+
+            if run_status.status == "failed":
+                return run_status
+
+        messages = client.beta.threads.messages.list(thread_id)
+
+        print("messages", re.sub(regex_pattern, '', messages.data[0].content[0].text.value))
+
+        data = {
+            "role": "BOT",
+            "content": re.sub(regex_pattern, '', messages.data[0].content[0].text.value),
+            "chatbotId": ObjectId(chatbot_id),
+            "messagesId": ObjectId(messages_id),
+            "createdAt": current_date
+        }
+
+        bot_message = message_collection.insert_one(data)
+
+        chatbot_collection.find_one_and_update({"bot_id": assistant_id}, {"$inc": {"messages_used": 1}})
+
+        text_value = messages.data[0].content[0].text.value
+        cleaned_text = re.sub(regex_pattern, '', text_value)
+        follow_up_question = extract_follow_up_question(cleaned_text)
+
+        assistant_reply = {
+            "message": cleaned_text.replace(follow_up_question, ""),
+            "role": "BOT",
+            "follow_up_questions": follow_up_question
+        }
+
+        print(bot_message)
+
+        return assistant_reply
     except Exception as e:
         error = {"message": "Something went wrong", "statusCode": 500}
         print(e)
