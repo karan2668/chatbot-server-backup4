@@ -38,6 +38,9 @@ message_collection = mydb.Message
 faq_collection = mydb.FAQ
 source_collection = mydb.Source
 
+# Get the current date and time in UTC
+current_date = datetime.utcnow()
+
 # app instance
 app = FastAPI(title="Website Text Extraction API")
 
@@ -136,18 +139,25 @@ def fetch_user(data: dict = Body(...)):
         
         chatbot_result["faqs"] = []
         
+        
         if  messagesId is not None:
             chatbot_result["messagesId"] = messagesId
+            
+            chatbot_result["messages"] = []
+            messages_query = {"messagesId": ObjectId(messagesId)}
+
+            messages = message_collection.find(messages_query)
+
+            for message in messages:
+                chatbot_result["messages"].append(message)
+        
         else :
             profileId = chatbot_result["profileId"]
-
-            # Get the current date and time in UTC
-            current_date = datetime.now()
 
             data = {
                 "chatbotId": ObjectId(chatbotId),
                 "profileId": ObjectId(profileId),
-                "createdAt": current_date 
+                "createdAt": current_date
             }
 
             session_created = messages_collection.insert_one(data)
@@ -160,7 +170,7 @@ def fetch_user(data: dict = Body(...)):
 
         for faq in faqs:
             chatbot_result["faqs"].append(faq)
-        
+            
         # Assuming you need to close the MongoDB client (check if this is necessary in your case)
         # client.close()
 
@@ -232,9 +242,6 @@ async def get_bot_message(data: dict = Body(...)):
         chatbotId = data.get("chatbotId")
         query = data.get("query")
 
-        # Get the current date and time in UTC
-        current_date = datetime.now()
-
         chatbot_result = chatbot_collection.find_one({"_id": ObjectId(chatbotId)})
 
         faq_query = {"question": query}
@@ -242,13 +249,15 @@ async def get_bot_message(data: dict = Body(...)):
         faq = faq_collection.find_one(faq_query)
 
         sources = source_collection.find({"chatbotId": ObjectId(chatbotId)})
+        def error_message(text):
+            yield text
 
         sources_list = list(sources)
         if sources is not None and len(sources_list) == 0:
-            return {"content": chatbot_result["files_not_uploaded_message"], "role": "assistant"}
+            return StreamingResponse(error_message(str(chatbot_result["files_not_uploaded_message"])), media_type='text/event-stream')
 
         if chatbot_result["messages_used"] == chatbot_result["messages_limit_per_day"]:
-            return {"content": chatbot_result["messages_limit_warning_message"], "role": "assistant"}
+            return StreamingResponse(error_message(str(chatbot_result["messages_limit_warning_message"])), media_type='text/event-stream')
         
         if faq is not None and faq["question"] == query:
             data = [
@@ -269,7 +278,7 @@ async def get_bot_message(data: dict = Body(...)):
             ]
             message_collection.insert_many(data)
             chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
-            return {"content": faq["answer"], "role": "assistant"}
+            return StreamingResponse(error_message(str(faq["answer"])), media_type='text/event-stream')
 
         context = ""
 
@@ -277,27 +286,29 @@ async def get_bot_message(data: dict = Body(...)):
             context += await get_context(query, source["file_key"])
         
         # print("context", context)
-        
-        support_details = "If you are facing any issue then mail your issue @pilare9421@vasteron.com"
-        additional_guidelines = chatbot_result["bot_guidelines"]
-        brandvoice_placeholder = f"START CONTEXT BLOCK\n{str(context)}\nEND OF CONTEXT BLOCK"
 
-        response_length = "0 to 30 words only" if chatbot_result["response_length"] == "short" else None
+        response_length = (
+            "500"  # First condition
+            if chatbot_result["response_length"] == "short"
+            else "1000"  # Second condition
+            if chatbot_result["response_length"] == "medium"
+            else "2000"  # Third condition
+        )
+
 
         support_bot_prompt = f"""
             You are {chatbot_result["bot_name"]}, an AI assistant conversant ONLY in English, enthusiastic about representing and providing information about the company (if given) {chatbot_result["company_name"]} and its services you're designed to assist with.
             Given the following extracted chunks from a long document, your task is to create a final, engaging answer in English. If an answer can't be found in the chunks, politely say that you don't know and offer to assist with anything else.
-            If you don't find an answer from the chunks, politely say that you don't know and ask if you can help with anything else. Don't try to make up an answer{brandvoice_placeholder}. Answer the user's query with more confidence.
+            If you don't find an answer from the chunks, politely say that you don't know and ask if you can help with anything else. Don't try to make up an answer. Answer the user's query with more confidence.
             Ensure not to reference competitors while delivering responses.
-            {support_details}
             Your goals are to:
-            Answer the user's query in between {response_length}.
+            Give response under {response_length} characters only.
             - Show empathy towards user concerns, particularly related to the services you represent, referring to the company in first-person terms, such as 'we' or 'us'.
             - Confirm resolution, express gratitude to the user, and close the conversation with a polite, positive sign-off when no more assistance is needed.
             - Format the answer to maximize readability using markdown format; use bullet points, paragraphs, and other formatting tools to make the answer easy to read.
             - Answer ONLY in English irrespective of user's conversation or language used in the chunk.
             Do NOT answer in any other language other than English.
-            {additional_guidelines}
+            - {chatbot_result["bot_guidelines"]}
             Here's an example:
             ===
             CONTEXT INFORMATION:
@@ -311,6 +322,10 @@ async def get_bot_message(data: dict = Body(...)):
             - Unlimited streaming hours
             - Ability to download songs for offline listening
             Please let me know if there's anything else I can assist you with!
+            
+            START CONTEXT BLOCK\n
+            {str(context)}\n
+            END OF CONTEXT BLOCK
             """
 
         prompt = {
@@ -324,33 +339,45 @@ async def get_bot_message(data: dict = Body(...)):
                 stream=True,
                 messages=[prompt, *filter(lambda m: m["role"] == "user", messages)]
             )
+
+            full_stream_text = ""
             for line in completion:
                 chunk = line.choices[0].delta.content
+                if chunk is not None:  # Check if chunk is not None
+                    full_stream_text += chunk
+
+                # Other processing
+                finish_reason = line.choices[0].finish_reason
+                if finish_reason == "stop":
+                    # This is the end of the stream
+                    # Save messages to the database
+                    data = [
+                        {
+                            "role": "user",
+                            "content": query,
+                            "chatbotId": ObjectId(chatbotId),
+                            "messagesId": ObjectId(messagesId),
+                            "createdAt": current_date
+                        },
+                        {
+                            "role": "assistant",
+                            "content": full_stream_text,
+                            "chatbotId": ObjectId(chatbotId),
+                            "messagesId": ObjectId(messagesId),
+                            "createdAt": current_date
+                        }
+                    ]
+
+                    create_response = message_collection.insert_many(data)
+
+                    print(create_response)
+
+                    chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
+                    break  # Exit the loop
                 if chunk:
                     yield chunk
 
-        # data = [
-        #     {
-        #         "role": "user",
-        #         "content": query,
-        #         "chatbotId": ObjectId(chatbotId),
-        #         "messagesId": ObjectId(messagesId),
-        #         "createdAt": current_date
-        #     },
-        #     {
-        #         "role": "assistant",
-        #         "content": response.choices[0].message.content,
-        #         "chatbotId": ObjectId(chatbotId),
-        #         "messagesId": ObjectId(messagesId),
-        #         "createdAt": current_date
-        #     }
-        # ]
-
-        # create_response = message_collection.insert_many(data)
-
-        # print(create_response)
-
-        # chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
+        # 
 
         # Use the generator in StreamingResponse
         return StreamingResponse(stream(), media_type='text/event-stream')
