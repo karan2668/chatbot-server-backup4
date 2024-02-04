@@ -188,7 +188,7 @@ def get_matches_from_embeddings(embeddings, file_key):
         # print("embeddings",embeddings)
         # print("file_key",file_key)
         query_result = pinecone_index.query(
-            top_k=5,
+            top_k=3,
             vector=embeddings,
             include_metadata=True,
             namespace=file_key
