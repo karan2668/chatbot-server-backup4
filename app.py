@@ -12,12 +12,13 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 from pinecone import Pinecone
+import base64
 
 # load config from .env file
 load_dotenv()
 MONGODB_URI = os.environ["MONGODB_URI"]
 
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+# OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
 PINECONE_ENVIRONMENT = os.environ["PINECONE_ENVIRONMENT"]
@@ -26,7 +27,7 @@ PINECONE_INDEX = os.environ["PINECONE_INDEX"]
 pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
 pinecone_index = pc.Index(PINECONE_INDEX)
 
-openCl = OpenAI(api_key=OPENAI_API_KEY)
+# openCl = OpenAI(api_key=OPENAI_API_KEY)
 
 client = MongoClient(MONGODB_URI)
 
@@ -200,7 +201,7 @@ def get_matches_from_embeddings(embeddings, file_key):
         raise error
 
 
-async def get_embeddings(text):
+async def get_embeddings(text, openCl):
     try:
         response = openCl.embeddings.create(
             model="text-embedding-ada-002",
@@ -213,10 +214,10 @@ async def get_embeddings(text):
         print("error calling openai embeddings api", error)
         raise error
     
-async def get_context(query, file_key):
+async def get_context(query, file_key, openCl):
     # print("query",query)
     # print("file_key",file_key)
-    query_embeddings = await get_embeddings(query)
+    query_embeddings = await get_embeddings(query, openCl)
     
     matches = get_matches_from_embeddings(query_embeddings, file_key)
     # print("matches", matches)
@@ -243,6 +244,24 @@ async def get_bot_message(data: dict = Body(...)):
         query = data.get("query")
 
         chatbot_result = chatbot_collection.find_one({"_id": ObjectId(chatbotId)})
+
+        profile = profile_collection.find_one({"_id": ObjectId(chatbot_result["profileId"])})
+        
+        # Decode a Base64 encoded string
+        # print(profile["user_key"])
+        decoded_string = base64.b64decode(profile["user_key"])
+        # Remove the b prefix using the decode() method
+        decoded_string = decoded_string.decode('utf-8')
+
+        # # Remove the b prefix using the str.strip() method
+        decoded_string = decoded_string.strip('b')
+
+        # # Print the decoded string
+        # print(decoded_string)
+
+        openCl = OpenAI(api_key=decoded_string)
+
+        # print("profile", profile)
 
         faq_query = {"question": query}
 
@@ -280,48 +299,45 @@ async def get_bot_message(data: dict = Body(...)):
             chatbot_collection.find_one_and_update({"_id": ObjectId(chatbotId)}, {"$inc": {"messages_used": 1}})
             return StreamingResponse(error_message(str(faq["answer"])), media_type='text/event-stream')
 
-        context = ""
+        uniqueContexts = set()
 
         for source in sources_list: 
-            context += await get_context(query, source["file_key"])
+            uniqueContexts.add(await get_context(query, source["file_key"], openCl))
         
-        # print("context", context)
+        context = ''.join(uniqueContexts)
+        print("context", context)
 
         response_length = (
-            "500"  # First condition
+            "1 or 2"  # First condition
             if chatbot_result["response_length"] == "short"
-            else "1000"  # Second condition
+            else "2 or 3"  # Second condition
             if chatbot_result["response_length"] == "medium"
-            else "2000"  # Third condition
+            else "3 or 4"  # Third condition
         )
 
 
         support_bot_prompt = f"""
-            You are {chatbot_result["bot_name"]}, an AI assistant conversant ONLY in English, enthusiastic about representing and providing information about the company (if given) {chatbot_result["company_name"]} and its services you're designed to assist with.
-            Given the following extracted chunks from a long document, your task is to create a final, engaging answer in English. If an answer can't be found in the chunks, politely say that you don't know and offer to assist with anything else.
-            If you don't find an answer from the chunks, politely say that you don't know and ask if you can help with anything else. Don't try to make up an answer. Answer the user's query with more confidence.
-            Ensure not to reference competitors while delivering responses.
-            Your goals are to:
-            Give response under {response_length} characters only.
-            - Show empathy towards user concerns, particularly related to the services you represent, referring to the company in first-person terms, such as 'we' or 'us'.
-            - Confirm resolution, express gratitude to the user, and close the conversation with a polite, positive sign-off when no more assistance is needed.
-            - Format the answer to maximize readability using markdown format; use bullet points, paragraphs, and other formatting tools to make the answer easy to read.
-            - Answer ONLY in English irrespective of user's conversation or language used in the chunk.
-            Do NOT answer in any other language other than English.
-            - {chatbot_result["bot_guidelines"]}
-            Here's an example:
-            ===
-            CONTEXT INFORMATION:
-            CHUNK [1]: Our company offers a subscription-based music streaming service called 'MusicStreamPro.' We have two plans: Basic and Premium. The Basic plan costs $4.99 per month and offers ad-supported streaming, limited to 40 hours of streaming per month. The Premium plan costs $9.99 per month and offers ad-free streaming, unlimited streaming hours, and the ability to download songs for offline listening.
-            CHUNK [2]: Not a relevant piece of information
-            ---
-            Question: What is the cost of the Premium plan, and what features does it include?
-            Helpful Answer:
-            The cost of the Premium plan is $9.99 per month. The features included in this plan are:
-            - Ad-free streaming
-            - Unlimited streaming hours
-            - Ability to download songs for offline listening
-            Please let me know if there's anything else I can assist you with!
+            As {chatbot_result["bot_name"]}, you clarify {chatbot_result["company_name"]}'s information and services, condensing extensive documents into clear responses. If uncertain, admit it and offer further help. Guidelines:
+            - Don't respond in more than {response_length} sentences.
+            - Refer to the company as 'we' or 'us'.
+            - Confirm issue resolution, thank users, and end politely.
+            - Use bullet points and paragraphs for readability.
+            - {chatbot_result["bot_guidelines"]}.
+            
+            Example:
+            Sections:
+            
+            1. 'MusicStreamPro' provides Basic ($4.99/mo, 40 hours ad-supported streaming) and Premium plans ($9.99/mo, ad-free/unlimited streaming, song downloads).
+            2. Irrelevant info.
+            
+            Question: Premium plan details?
+            Answer:
+            Premium is $9.99/mo, offering:
+            
+            - No ads
+            - Unlimited streaming
+            - Song downloads
+            Need more help? Just ask!
             
             START CONTEXT BLOCK\n
             {str(context)}\n
