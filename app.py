@@ -351,7 +351,7 @@ async def get_bot_message(data: dict = Body(...)):
         
         def stream():
             completion = openCl.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4-turbo-preview" if chatbot_result["is_gpt_4"] else "gpt-3.5-turbo",
                 stream=True,
                 messages=[prompt, *filter(lambda m: m["role"] == "user", messages)]
             )
